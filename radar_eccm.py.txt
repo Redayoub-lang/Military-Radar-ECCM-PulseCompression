@@ -1,0 +1,122 @@
+"""
+LFM Radar Pulse Compression & DRFM Anti-Jamming ECCM Engine
+Developer: Ayoub Lahmar (@Redayoub-lang)
+Domain: Electronic Warfare (EW), Radar Signal Processing & Defense Systems
+"""
+
+import numpy as np
+
+
+class RadarECCMEngine:
+
+  def __init__(
+      self,
+      sample_rate: float = 20e6,
+      pulse_duration: float = 20e-6,
+      bandwidth: float = 5e6,
+  ):
+    """
+    :param sample_rate: Sampling frequency in Hz (20 MHz).
+    :param pulse_duration: Chirp duration tau in seconds (20 us).
+    :param bandwidth: LFM sweep bandwidth B in Hz (5 MHz).
+    """
+    self.fs = sample_rate
+    self.tau = pulse_duration
+    self.bw = bandwidth
+    self.k = bandwidth / pulse_duration  # Chirp rate (Hz/s)
+
+    # Time vector for transmitted pulse
+    self.num_samples = int(self.fs * self.tau)
+    self.t = np.linspace(
+        -self.tau / 2, self.tau / 2, self.num_samples, endpoint=False
+    )
+
+    # Reference LFM Chirp Signal s(t) = exp(j * pi * K * t^2)
+    self.reference_chirp = np.exp(1j * np.pi * self.k * (self.t**2))
+
+  def generate_rx_signal(
+      self,
+      target_delay_sec: float,
+      doppler_shift_hz: float,
+      snr_db: float = 10.0,
+      drfm_jamming: bool = True,
+  ) -> np.ndarray:
+    """Simulates raw RF reflected signal with target return, Doppler shift, and DRFM deceptive noise."""
+    total_samples = self.num_samples * 5
+    rx_signal = np.zeros(total_samples, dtype=np.complex128)
+
+    # 1. Real Target Return
+    delay_idx = int(target_delay_sec * self.fs)
+    if delay_idx + self.num_samples < total_samples:
+      doppler_phase = np.exp(1j * 2 * np.pi * doppler_shift_hz * self.t)
+      rx_signal[delay_idx : delay_idx + self.num_samples] += (
+          self.reference_chirp * doppler_phase
+      )
+
+    # 2. Injection of DRFM False Target Deception Jamming
+    if drfm_jamming:
+      false_delay_idx = delay_idx + int(5e-6 * self.fs)  # 5 us false offset
+      if false_delay_idx + self.num_samples < total_samples:
+        rx_signal[false_delay_idx : false_delay_idx + self.num_samples] += (
+            1.8 * self.reference_chirp
+        )
+
+    # 3. Additive White Gaussian Noise (AWGN)
+    signal_power = np.mean(np.abs(rx_signal) ** 2)
+    if signal_power > 0:
+      noise_power = signal_power / (10 ** (snr_db / 10.0))
+      noise = (
+          np.random.normal(0, np.sqrt(noise_power / 2), total_samples)
+          + 1j * np.random.normal(0, np.sqrt(noise_power / 2), total_samples)
+      )
+      rx_signal += noise
+
+    return rx_signal
+
+  def process_matched_filter(self, rx_signal: np.ndarray) -> np.ndarray:
+    """Performs Matched Filter pulse compression using FFT convolution."""
+    # Time-reversed conjugate of reference chirp
+    matched_template = np.conj(self.reference_chirp[::-1])
+
+    # Fast convolution via FFT
+    compressed_output = np.fft.fftconvolve(
+        rx_signal, matched_template, mode="same"
+    )
+    return np.abs(compressed_output)
+
+
+if __name__ == "__main__":
+  print("[SYSTEM INIT] Military LFM Radar ECCM Engine Online...\n")
+  radar = RadarECCMEngine()
+
+  # Simulated target at 15 km (delay = 2 * 15000 / c ≈ 100 us)
+  c = 3e8
+  target_distance_m = 15000.0
+  true_delay = (2.0 * target_distance_m) / c
+  doppler = 1500.0  # 1.5 kHz Doppler shift (High-speed interceptor)
+
+  rx_raw = radar.generate_rx_signal(
+      target_delay_sec=true_delay,
+      doppler_shift_hz=doppler,
+      snr_db=12.0,
+      drfm_jamming=True,
+  )
+  compressed = radar.process_matched_filter(rx_raw)
+
+  peak_index = np.argmax(compressed)
+  estimated_delay = peak_index / radar.fs
+  estimated_range_m = (estimated_delay * c) / 2.0
+
+  print(
+      f"[RADAR TX] Chirp Bandwidth: {radar.bw/1e6:.1f} MHz | Duration:"
+      f" {radar.tau*1e6:.1f} us"
+  )
+  print(f"[TRUE TARGET] Range: {target_distance_m/1000.0:.2f} km")
+  print(
+      f"[PULSE COMPRESSION] Primary Peak Range Estimate:"
+      f" {estimated_range_m/1000.0:.2f} km"
+  )
+  print(
+      "[ECCM STATUS] Matched Filter Gain Achieved:"
+      f" {10*np.log10(radar.num_samples):.2f} dB\n"
+  )
